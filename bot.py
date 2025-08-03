@@ -1,43 +1,44 @@
-
+import logging
 import os
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.utils import executor
+from aiogram.dispatcher.filters import Command
+from aiogram.dispatcher.middlewares import BaseMiddleware
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
+API_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "5026972781"))  # ID жены
 
-user_states = {}
+logging.basicConfig(level=logging.INFO)
+bot = Bot(token=API_TOKEN)
+dp = Dispatcher(bot, storage=MemoryStorage())
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Добро пожаловать в DP Studio! Для доступа к контенту переведите оплату. После подтверждения — вы получите доступ.")
+user_payments = {}  # Примитивная БД
 
-async def request_access(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user_states[user_id] = "waiting_confirmation"
+@dp.message_handler(commands=["start"])
+async def cmd_start(message: Message):
+    await message.answer("Привет! Чтобы получить доступ, отправь чек об оплате.")
 
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("Подтвердить оплату", callback_data=f"confirm_{user_id}")
-    ]])
-    await context.bot.send_message(chat_id=ADMIN_ID,
-                                   text=f"Пользователь @{update.effective_user.username} запросил доступ.",
-                                   reply_markup=keyboard)
-    await update.message.reply_text("Запрос отправлен. Ожидайте подтверждения.")
+@dp.message_handler(content_types=["photo", "document"])
+async def handle_payment_proof(message: Message):
+    user_id = message.from_user.id
+    user_payments[user_id] = False  # пока не подтверждено
+    forward_text = f"Пользователь @{message.from_user.username or user_id} прислал подтверждение оплаты. Подтвердить?"
+    keyboard = InlineKeyboardMarkup().add(
+        InlineKeyboardButton("✅ Подтвердить", callback_data=f"approve_{user_id}")
+    )
+    await bot.send_message(ADMIN_ID, forward_text, reply_markup=keyboard)
+    await bot.forward_message(ADMIN_ID, message.chat.id, message.message_id)
+    await message.answer("Спасибо! Ожидайте подтверждения.")
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-
-    if data.startswith("confirm_") and int(query.from_user.id) == ADMIN_ID:
-        user_id = int(data.split("_")[1])
-        await context.bot.send_message(chat_id=user_id, text="Оплата подтверждена! Доступ открыт: https://t.me/+uFJK4zMvnuYxMDQy")
-
-def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("access", request_access))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.run_polling()
+@dp.callback_query_handler(lambda c: c.data.startswith("approve_"))
+async def approve_payment(callback_query: types.CallbackQuery):
+    user_id = int(callback_query.data.split("_")[1])
+    user_payments[user_id] = True
+    await bot.send_message(user_id, "Оплата подтверждена! Вот ваш контент:")
+    await bot.send_message(user_id, "🔓 Доступ открыт. Контент скоро появится.")
+    await callback_query.answer("Подтверждено.")
 
 if __name__ == "__main__":
-    main()
+    executor.start_polling(dp, skip_updates=True)
